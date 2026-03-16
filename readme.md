@@ -58,7 +58,7 @@ Download the latest release for your platform from the
 | Platform | File | Notes |
 |---|---|---|
 | Windows | `sortr-windows.exe` | Double-click to run; opens a native desktop window |
-| macOS | `SORTR.app` | Drag to Applications; Universal Binary (Intel + Apple Silicon) |
+| macOS | `SORTR.app` | Drag to Applications |
 | Linux | `sortr-linux` | `chmod +x sortr-linux && ./sortr-linux` |
 
 All executables are **fully self-contained** — no Python, no Flask, no additional installs required.
@@ -76,8 +76,8 @@ All executables are **fully self-contained** — no Python, no Flask, no additio
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/sortr.git
-cd sortr
+git clone https://github.com/SinghChinmay/sortr-image-organizer-desktop.git
+cd sortr-image-organizer-desktop
 
 # (Recommended) create an isolated virtual environment
 python -m venv .venv
@@ -99,6 +99,8 @@ python app.py
 
 Then open **http://127.0.0.1:5050** in any modern browser.
 When the server starts it prints the exact URL to the terminal.
+
+> In standalone executable mode, SORTR opens in a native desktop window via `pywebview`.
 
 ---
 
@@ -185,46 +187,27 @@ Saved templates are stored in your user profile at:
 
 ## 🔨 Building Executables
 
-Build scripts are in the `build/` directory. Each script:
-
-1. Creates (or reuses) a virtual environment with all dependencies.
-2. Runs PyInstaller with the `sortr.spec` spec file.
-3. Outputs the final binary into `dist/`.
-
-### Windows
-
-```bat
-build\build_windows.bat
-```
-
-Output: `dist\sortr-windows.exe`
-
-### macOS
+Build with PyInstaller using the bundled spec file:
 
 ```bash
-bash build/build_macos.sh
+pip install -r requirements.txt
+pyinstaller sortr.spec --noconfirm --clean
 ```
 
-Output: `dist/SORTR.app` (Universal Binary — runs natively on both Intel and Apple Silicon).
+Artifacts are written to `dist/`:
+
+- Windows: `dist/sortr-windows.exe`
+- macOS: `dist/SORTR.app`
+- Linux: `dist/sortr-linux`
+
+### Automated builds and release assets
+
+GitHub Actions workflow [`.github/workflows/release.yml`](.github/workflows/release.yml)
+builds Windows, macOS, and Linux artifacts for tags matching `v*` and uploads
+them to the corresponding GitHub Release.
 
 > **Notarisation:** to distribute outside the App Store, sign and notarise with
 > `codesign` and `xcrun notarytool` after building.
-
-### Linux
-
-```bash
-bash build/build_linux.sh
-```
-
-Output: `dist/sortr-linux` (single ELF binary).
-
-### Prerequisites for building
-
-```bash
-pip install pyinstaller
-# or install all dev dependencies:
-pip install -r requirements.txt
-```
 
 ### How the bundle works
 
@@ -236,7 +219,8 @@ pip install -r requirements.txt
 - On macOS, produce a `.app` bundle with proper `Info.plist` metadata.
 
 At runtime, `app.py` detects `sys.frozen` and uses `sys._MEIPASS` to locate
-the bundled `index.html`, then opens the default browser automatically.
+the bundled `index.html`, then opens a native desktop window via `pywebview`
+(with a browser fallback if `pywebview` is unavailable).
 
 ---
 
@@ -253,10 +237,9 @@ sortr/
 ├── README.md
 ├── CONTRIBUTING.md
 ├── CODE_OF_CONDUCT.md
-└── build/
-    ├── build_windows.bat   # Windows build script
-    ├── build_linux.sh      # Linux build script
-    └── build_macos.sh      # macOS build script
+└── .github/
+   └── workflows/
+      └── release.yml      # CI build + release asset upload
 ```
 
 ---

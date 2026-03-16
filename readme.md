@@ -43,7 +43,10 @@ then apply them all in a single batch — **nothing is touched until you confirm
 
 ## 📸 Screenshots
 
-> _Add screenshots of the Setup, Sort, Review, and Results screens here._
+<img width="1226" height="695" alt="image" src="https://github.com/user-attachments/assets/b37dc0f7-c725-40f6-bc6c-059415353c17" />
+s<img width="1229" height="742" alt="image" src="https://github.com/user-attachments/assets/1c1595ad-8d5c-491d-9028-858d236ea6d1" />
+<img width="1223" height="751" alt="image" src="https://github.com/user-attachments/assets/db9e2ec8-1306-494b-b997-c458930a89d8" />
+<img width="1313" height="1317" alt="image" src="https://github.com/user-attachments/assets/0fadd6ff-f4c4-42d4-81f0-9bc269508a35" />
 
 ---
 

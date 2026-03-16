@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<!--
+  SORTR — Image Organizer
+  Version: 1.0.0
+
+  Single-page application served by app.py (Flask).
+
+  Structure
+  ─────────
+  Screen 1 (setup)   — directory inputs and folder list preview
+  Screen 2 (sort)    — image viewer + action buttons / keyboard shortcuts
+  Screen 3 (review)  — full change summary before committing
+  Screen 4 (results) — post-run outcome display
+
+  Only one screen is visible at a time; `.screen.active` controls visibility.
+
+  API endpoints consumed
+  ──────────────────────
+  POST /api/scan          scan a directory; initialise session
+  GET  /api/image/<index> stream image bytes for display
+  POST /api/decide        record a move/delete/skip decision
+  GET  /api/review        fetch all pending decisions
+  POST /api/undo          step back one image and clear its decision
+  POST /api/run           apply all decisions to the filesystem
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SORTR — Image Organizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --surface: #161616;
+    --border: #2a2a2a;
+    --accent: #e8ff47;
+    --accent2: #ff6b35;
+    --text: #f0f0f0;
+    --muted: #666;
+    --danger: #ff3b3b;
+    --success: #3bff8a;
+    --mono: 'Space Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── NOISE TEXTURE ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.35;
+  }
+
+  /* ── HEADER ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 40px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(13,13,13,0.92);
+    backdrop-filter: blur(12px);
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: 1.6rem;
+    letter-spacing: -0.02em;
+  }
+  .logo span { color: var(--accent); }
+
+  .header-meta {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-align: right;
+    line-height: 1.6;
+  }
+
+  /* ── PROGRESS BAR ── */
+  .progress-bar-outer {
+    height: 3px;
+    background: var(--border);
+    width: 100%;
+  }
+  .progress-bar-inner {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s ease;
+    width: 0%;
+  }
+
+  /* ── SCREENS ── */
+  .screen { display: none; padding: 40px; max-width: 1200px; margin: 0 auto; }
+  .screen.active { display: block; }
+
+  /* ── SETUP SCREEN ── */
+  .setup-wrap {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 60px;
+    align-items: start;
+    margin-top: 40px;
+  }
+
+  .setup-left h1 {
+    font-size: clamp(2.5rem, 5vw, 4rem);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    margin-bottom: 16px;
+  }
+  .setup-left h1 em {
+    font-style: normal;
+    color: var(--accent);
+    display: block;
+  }
+  .setup-left p {
+    color: var(--muted);
+    font-size: 0.95rem;
+    line-height: 1.7;
+    max-width: 380px;
+  }
+
+  .setup-right { padding-top: 8px; }
+
+  .field-label {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 8px;
+  }
+
+  .dir-input-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 32px;
+  }
+
+  input[type="text"] {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 14px 18px;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  input[type="text"]::placeholder { color: var(--muted); }
+
+  .btn {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.85rem;
+    padding: 14px 24px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .btn-accent { background: var(--accent); color: #000; }
+  .btn-accent:hover { background: #fff; }
+  .btn-ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-danger:hover { background: #ff6060; }
+  .btn-success { background: var(--success); color: #000; }
+  .btn-success:hover { background: #70ffb0; }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* Folder list */
+  .folders-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .folder-chip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+  }
+  .folder-chip .fkey {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    background: var(--border);
+    color: var(--accent);
+    padding: 2px 7px;
+    font-weight: 700;
+  }
+  .folder-chip .fpath {
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    color: var(--muted);
+    margin-top: 2px;
+    word-break: break-all;
+  }
+  .folder-info { flex: 1; }
+  .folder-name { font-weight: 700; }
+
+  .folder-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .folder-editor-row {
+    display: grid;
+    grid-template-columns: 88px 1fr auto;
+    gap: 8px;
+    align-items: center;
+  }
+  .folder-editor-row .small-input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    outline: none;
+  }
+  .folder-editor-row .small-input:focus { border-color: var(--accent); }
+  .tiny-btn {
+    padding: 10px 12px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* ── SORT SCREEN ── */
+  .sort-layout {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 32px;
+    align-items: start;
+  }
+
+  .image-stage {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    min-height: 500px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .image-stage img {
+    max-width: 100%;
+    max-height: 600px;
+    object-fit: contain;
+    display: block;
+    transition: opacity 0.25s;
+  }
+
+  .image-overlay {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    background: rgba(0,0,0,0.75);
+    padding: 6px 10px;
+    color: var(--muted);
+  }
+
+  .sort-panel { display: flex; flex-direction: column; gap: 16px; }
+
+  .sort-panel h3 {
+    font-size: 0.65rem;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+
+  .folder-btns { display: flex; flex-direction: column; gap: 6px; }
+
+  .folder-btn {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+    text-align: left;
+    width: 100%;
+  }
+  .folder-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(232,255,71,0.05); }
+  .folder-btn .kbd {
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    background: var(--border);
+    color: var(--accent);
+    padding: 3px 7px;
+    min-width: 24px;
+    text-align: center;
+  }
+
+  .action-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .skip-btn { background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+  .skip-btn:hover { border-color: var(--text); color: var(--text); }
+
+  .progress-info {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--muted);
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+  }
+  .progress-info span { color: var(--accent); }
+
+  /* ── REVIEW SCREEN ── */
+  .review-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-bottom: 32px;
+  }
+  .review-header h2 { font-size: 2rem; font-weight: 800; }
+  .review-header p { color: var(--muted); font-size: 0.85rem; margin-top: 6px; }
+
+  .review-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 20px;
+  }
+  .stat-card .num {
+    font-size: 2rem;
+    font-weight: 800;
+    font-family: var(--mono);
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .stat-card .lbl {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+  .stat-card.moves .num { color: var(--accent); }
+  .stat-card.deletes .num { color: var(--danger); }
+  .stat-card.skips .num { color: var(--muted); }
+  .stat-card.undecided .num { color: var(--accent2); }
+
+  .changes-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    margin-bottom: 32px;
+  }
+  .changes-table th {
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    padding: 10px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  .changes-table td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+  }
+  .changes-table tr:hover td { background: var(--surface); }
+  .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    padding: 3px 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+  .badge-move { background: rgba(232,255,71,0.15); color: var(--accent); }
+  .badge-delete { background: rgba(255,59,59,0.15); color: var(--danger); }
+  .badge-skip { background: rgba(102,102,102,0.2); color: var(--muted); }
+
+  .review-actions { display: flex; gap: 12px; justify-content: flex-end; }
+
+  /* ── RESULTS SCREEN ── */
+  .results-wrap { text-align: center; max-width: 600px; margin: 80px auto; }
+  .results-wrap .big-check {
+    font-size: 4rem;
+    margin-bottom: 24px;
+    display: block;
+  }
+  .results-wrap h2 {
+    font-size: 2.5rem;
+    font-weight: 800;
+    margin-bottom: 12px;
+  }
+  .results-wrap p { color: var(--muted); font-size: 0.9rem; line-height: 1.7; margin-bottom: 32px; }
+  .result-detail {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 20px 24px;
+    text-align: left;
+    margin-bottom: 24px;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    line-height: 2;
+  }
+
+  /* ── ERROR TOAST ── */
+  .toast {
+    position: fixed;
+    bottom: 32px;
+    right: 32px;
+    background: var(--danger);
+    color: #fff;
+    padding: 14px 20px;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    max-width: 320px;
+    z-index: 9000;
+    transform: translateY(20px);
+    opacity: 0;
+    transition: all 0.3s;
+  }
+  .toast.show { transform: translateY(0); opacity: 1; }
+
+  /* ── LOADING ── */
+  .spinner {
+    width: 32px; height: 32px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin: auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── KBD hint ── */
+  .kb-hint {
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    color: var(--muted);
+    margin-top: 8px;
+    line-height: 1.8;
+  }
+
+  @media (max-width: 800px) {
+    .setup-wrap { grid-template-columns: 1fr; gap: 32px; }
+    .sort-layout { grid-template-columns: 1fr; }
+    .review-stats { grid-template-columns: 1fr 1fr; }
+    header { padding: 16px 20px; }
+    .screen { padding: 24px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">SORT<span>R</span></div>
+  <div class="header-meta">
+    <div id="header-progress" style="display:none">
+      <span id="hp-current">0</span> / <span id="hp-total">0</span> images
+    </div>
+    <div style="color:var(--muted)">Image Organizer v1.0</div>
+  </div>
+</header>
+
+<div class="progress-bar-outer">
+  <div class="progress-bar-inner" id="progress-bar"></div>
+</div>
+
+<!-- ════════════════════════════════════════
+     SCREEN 1 — SETUP
+════════════════════════════════════════ -->
+<div class="screen active" id="screen-setup">
+  <div class="setup-wrap">
+    <div class="setup-left">
+      <h1>Organize<em>your images.</em></h1>
+      <p>Scan a folder, decide where each image goes — or delete it — then run all changes at once. No files move until you confirm.</p>
+    </div>
+    <div class="setup-right">
+      <div class="field-label">Source Directory</div>
+      <div class="dir-input-row">
+        <input type="text" id="dir-input" placeholder="/Users/you/Downloads or C:\Users\you\Downloads" />
+        <button class="btn btn-accent" onclick="scanDirectory()">SCAN</button>
+      </div>
+
+      <div class="field-label">Destination Parent Directory</div>
+      <div class="dir-input-row">
+        <input type="text" id="dest-parent-input" placeholder="C:/Users/you/Pictures" value="{{ default_dest_parent }}" />
+      </div>
+
+      <div class="field-label" style="margin-bottom:10px">Destination Folders</div>
+      <div class="folders-grid" id="folders-grid">
+        <!-- injected by JS -->
+      </div>
+
+      <div class="field-label" style="margin:18px 0 10px">Edit Folder Types</div>
+      <div class="folder-editor" id="folder-editor"></div>
+      <div class="action-row">
+        <button class="btn btn-ghost tiny-btn" onclick="addFolderRow()">+ Add Folder</button>
+        <button class="btn btn-accent tiny-btn" onclick="saveFolderTemplates()">Save Folder Types</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════
+     SCREEN 2 — SORT
+════════════════════════════════════════ -->
+<div class="screen" id="screen-sort">
+  <div class="sort-layout">
+    <div>
+      <div class="image-stage" id="image-stage">
+        <div class="spinner" id="img-spinner"></div>
+        <img id="main-image" src="" alt="" style="display:none" onload="onImageLoad()" onerror="onImageError()">
+        <div class="image-overlay" id="img-meta"></div>
+      </div>
+    </div>
+
+    <div class="sort-panel">
+      <div>
+        <h3>Move to →</h3>
+        <div class="folder-btns" id="folder-btns">
+          <!-- injected -->
+        </div>
+      </div>
+
+      <div>
+        <div class="action-row">
+          <button class="btn btn-danger" onclick="decide('delete')">
+            <span class="kbd">D</span> &nbsp;DELETE
+          </button>
+          <button class="btn skip-btn" onclick="decide('skip')">
+            <span class="kbd">S</span> &nbsp;SKIP
+          </button>
+        </div>
+        <div class="action-row" style="margin-top:8px">
+          <button class="btn btn-ghost" onclick="undo()">↩ UNDO</button>
+          <button class="btn btn-ghost" onclick="goReview()">REVIEW →</button>
+        </div>
+      </div>
+
+      <div class="progress-info">
+        <span id="sort-progress">Image 0 of 0</span>
+        <span id="sort-decided">0 decided</span>
+      </div>
+
+      <div class="kb-hint">
+        Keyboard: <b>configured keys</b> to move &nbsp;·&nbsp; <b>D</b> delete &nbsp;·&nbsp; <b>S</b> skip &nbsp;·&nbsp; <b>Z</b> undo
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════
+     SCREEN 3 — REVIEW
+════════════════════════════════════════ -->
+<div class="screen" id="screen-review">
+  <div class="review-header">
+    <div>
+      <h2>Review Changes</h2>
+      <p>These changes will be applied when you click RUN. No files have moved yet.</p>
+    </div>
+    <button class="btn btn-ghost" onclick="goSort()">← BACK</button>
+  </div>
+
+  <div class="review-stats" id="review-stats"></div>
+
+  <table class="changes-table">
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Action</th>
+        <th>Destination</th>
+      </tr>
+    </thead>
+    <tbody id="review-tbody"></tbody>
+  </table>
+
+  <div id="undecided-block" style="display:none; margin-bottom:24px">
+    <div class="field-label" style="margin-bottom:8px; color:var(--accent2)">Undecided (will be skipped)</div>
+    <div id="undecided-list" style="font-family:var(--mono);font-size:0.7rem;color:var(--muted);line-height:2"></div>
+  </div>
+
+  <div class="review-actions">
+    <button class="btn btn-ghost" onclick="goSort()">← KEEP SORTING</button>
+    <button class="btn btn-success" id="run-btn" onclick="runChanges()">▶ RUN — APPLY CHANGES</button>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════
+     SCREEN 4 — RESULTS
+════════════════════════════════════════ -->
+<div class="screen" id="screen-results">
+  <div class="results-wrap">
+    <span class="big-check">✦</span>
+    <h2>Done.</h2>
+    <p>All changes have been applied successfully.</p>
+    <div class="result-detail" id="result-detail"></div>
+    <button class="btn btn-accent" onclick="reset()">START OVER</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script id="folders-data" type="application/json">{{ folders | tojson }}</script>
+<script id="folder-templates-data" type="application/json">{{ folder_templates | tojson }}</script>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+// All mutable UI state lives in these module-level variables.
+// `folders` is re-populated after every /api/scan call so the UI always
+// reflects the server-side session (important if a new scan changes the
+// destination parent directory).
+let folders = JSON.parse(document.getElementById('folders-data').textContent);
+let folderTemplates = JSON.parse(document.getElementById('folder-templates-data').textContent);
+let images = [];          // relative paths returned by /api/scan
+let currentIndex = 0;     // index of the image currently on screen
+let totalImages = 0;      // total images in the current scan
+let decidedCount = 0;     // running count for the "N decided" display
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+// Runs once on page load: render the UI with the Jinja-injected folder data
+// and attach the global keyboard listener.
+function init() {
+  recomputeFoldersFromTemplates();
+  renderFolderEditor();
+  renderFoldersGrid();
+  renderFolderButtons();
+  document.getElementById('dest-parent-input').addEventListener('input', () => {
+    recomputeFoldersFromTemplates();
+    renderFoldersGrid();
+    renderFolderButtons();
+  });
+  document.addEventListener('keydown', handleKey);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function recomputeFoldersFromTemplates() {
+  const destinationParent = document.getElementById('dest-parent-input').value.trim();
+  const root = destinationParent || '{{ default_dest_parent }}';
+  const normalizedRoot = root.replace(/[\\/]+$/, '');
+  const separator = normalizedRoot.includes('\\') ? '\\' : '/';
+  folders = folderTemplates.map(t => ({
+    key: t.key,
+    label: t.label,
+    path: normalizedRoot + separator + t.label
+  }));
+}
+
+function renderFoldersGrid() {
+  const grid = document.getElementById('folders-grid');
+  grid.innerHTML = '';
+  folders.forEach(f => {
+    grid.innerHTML += `
+      <div class="folder-chip">
+        <span class="fkey">${f.key}</span>
+        <div class="folder-info">
+          <div class="folder-name">${f.label}</div>
+          <div class="fpath">${f.path}</div>
+        </div>
+      </div>`;
+  });
+}
+
+function renderFolderButtons() {
+  const btnContainer = document.getElementById('folder-btns');
+  btnContainer.innerHTML = '';
+  folders.forEach(f => {
+    btnContainer.innerHTML += `
+      <button class="folder-btn" onclick="decide('move','${f.key}')">
+        <span class="kbd">${f.key}</span> ${f.label}
+      </button>`;
+  });
+}
+
+function renderFolderEditor() {
+  const editor = document.getElementById('folder-editor');
+  editor.innerHTML = '';
+  folderTemplates.forEach((template, idx) => {
+    editor.innerHTML += `
+      <div class="folder-editor-row">
+        <input
+          class="small-input"
+          value="${escapeHtml(template.key)}"
+          maxlength="1"
+          aria-label="Folder key"
+          onchange="updateTemplateField(${idx}, 'key', this.value)"
+        />
+        <input
+          class="small-input"
+          value="${escapeHtml(template.label)}"
+          aria-label="Folder label"
+          onchange="updateTemplateField(${idx}, 'label', this.value)"
+        />
+        <button class="btn btn-ghost tiny-btn" onclick="removeFolderRow(${idx})">Remove</button>
+      </div>`;
+  });
+}
+
+function updateTemplateField(index, field, value) {
+  if (!folderTemplates[index]) return;
+  if (field === 'key') {
+    folderTemplates[index].key = (value || '').trim().slice(0, 1);
+  } else if (field === 'label') {
+    folderTemplates[index].label = (value || '').trim();
+  }
+  recomputeFoldersFromTemplates();
+  renderFoldersGrid();
+  renderFolderButtons();
+  renderFolderEditor();
+}
+
+function removeFolderRow(index) {
+  folderTemplates.splice(index, 1);
+  if (folderTemplates.length === 0) {
+    folderTemplates.push({ key: '1', label: 'General' });
+  }
+  recomputeFoldersFromTemplates();
+  renderFoldersGrid();
+  renderFolderButtons();
+  renderFolderEditor();
+}
+
+function addFolderRow() {
+  const used = new Set(folderTemplates.map(t => (t.key || '').toLowerCase()));
+  const candidates = '123456789abcdefghijklmnopqrstuvwxyz'.split('');
+  const key = candidates.find(c => !used.has(c)) || 'x';
+  folderTemplates.push({ key, label: `Category ${folderTemplates.length + 1}` });
+  recomputeFoldersFromTemplates();
+  renderFoldersGrid();
+  renderFolderButtons();
+  renderFolderEditor();
+}
+
+function validateFolderTemplates() {
+  if (!Array.isArray(folderTemplates) || folderTemplates.length === 0) {
+    return 'At least one folder type is required';
+  }
+  const seen = new Set();
+  for (const template of folderTemplates) {
+    const key = (template.key || '').trim();
+    const label = (template.label || '').trim();
+    if (key.length !== 1) return 'Each folder key must be exactly 1 character';
+    const low = key.toLowerCase();
+    if (seen.has(low)) return `Duplicate key: ${key}`;
+    seen.add(low);
+    if (!label) return 'Folder labels cannot be empty';
+  }
+  return null;
+}
+
+async function saveFolderTemplates() {
+  const validationError = validateFolderTemplates();
+  if (validationError) { showToast(validationError); return; }
+
+  try {
+    const res = await fetch('/api/folders', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ folders: folderTemplates })
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.error || 'Failed to save folder types'); return; }
+
+    folderTemplates = data.templates;
+    folders = data.folders;
+    renderFolderEditor();
+    renderFoldersGrid();
+    renderFolderButtons();
+    showToast('Folder types saved');
+  } catch (e) {
+    showToast('Failed to save folder types');
+  }
+}
+
+// ── Screen switching ──────────────────────────────────────────────────────────
+// Toggle the `active` class so only the requested screen is displayed.
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + id).classList.add('active');
+}
+
+// ── Scan ──────────────────────────────────────────────────────────────────────
+// POST /api/scan with the source directory and destination parent.
+// On success, update local state and navigate to the sort screen.
+async function scanDirectory() {
+  const dir = document.getElementById('dir-input').value.trim();
+  const destinationParent = document.getElementById('dest-parent-input').value.trim();
+  if (!dir) { showToast('Enter a directory path'); return; }
+  if (!destinationParent) { showToast('Enter a destination parent directory'); return; }
+
+  const validationError = validateFolderTemplates();
+  if (validationError) { showToast(validationError); return; }
+
+  try {
+    const res = await fetch('/api/scan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        directory: dir,
+        destination_parent: destinationParent,
+        folder_templates: folderTemplates,
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.error); return; }
+
+    folderTemplates = data.templates;
+    folders = data.folders;
+    renderFolderEditor();
+    renderFoldersGrid();
+    renderFolderButtons();
+    images = data.images;
+    totalImages = data.count;
+    currentIndex = 0;
+    decidedCount = 0;
+
+    document.getElementById('header-progress').style.display = 'block';
+    updateHeaderProgress();
+    showScreen('sort');
+    loadImage(0);
+  } catch(e) { showToast('Connection error'); }
+}
+
+// ── Image loading ─────────────────────────────────────────────────────────────
+// Request the image at `idx` from the server.  The cache-busting `?t=`
+// query string prevents stale browser caches from serving a previous image.
+function loadImage(idx) {
+  if (idx >= totalImages) { goReview(); return; }
+
+  const img = document.getElementById('main-image');
+  const spinner = document.getElementById('img-spinner');
+  const meta = document.getElementById('img-meta');
+
+  img.style.display = 'none';
+  spinner.style.display = 'block';
+
+  img.src = `/api/image/${idx}?t=${Date.now()}`;
+  meta.textContent = `${images[idx]}  ·  ${idx+1}/${totalImages}`;
+
+  updateSortProgress();
+  updateProgressBar();
+}
+
+function onImageLoad() {
+  document.getElementById('img-spinner').style.display = 'none';
+  document.getElementById('main-image').style.display = 'block';
+}
+function onImageError() {
+  document.getElementById('img-spinner').style.display = 'none';
+  document.getElementById('img-meta').textContent += '  [preview unavailable]';
+  document.getElementById('main-image').style.display = 'none';
+}
+
+// ── Decide ────────────────────────────────────────────────────────────────────
+// POST /api/decide for the current image, then advance to the next one.
+// When the server signals `done`, jump straight to the review screen.
+async function decide(action, destKey) {
+  const body = { index: currentIndex, action };
+  if (destKey) body.dest = destKey;
+
+  try {
+    const res = await fetch('/api/decide', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.error); return; }
+
+    decidedCount++;
+    currentIndex = data.next_index;
+
+    if (data.done) {
+      goReview();
+    } else {
+      loadImage(currentIndex);
+    }
+  } catch(e) { showToast('Error'); }
+}
+
+// ── Undo ──────────────────────────────────────────────────────────────────────
+async function undo() {
+  try {
+    const res = await fetch('/api/undo', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { showToast('Nothing to undo'); return; }
+    if (decidedCount > 0) decidedCount--;
+    currentIndex = data.index;
+    loadImage(currentIndex);
+  } catch(e) {}
+}
+
+// ── Review ────────────────────────────────────────────────────────────────────
+// Fetch the full decision map from the server and render the review table.
+async function goReview() {
+  const res = await fetch('/api/review');
+  const data = await res.json();
+
+  const decisions = data.decisions;
+  const undecided = data.undecided;
+
+  let moves = 0, deletes = 0, skips = 0;
+  const tbody = document.getElementById('review-tbody');
+  tbody.innerHTML = '';
+
+  Object.entries(decisions).forEach(([file, d]) => {
+    let badge, dest;
+    if (d.action === 'move')   { moves++;   badge = 'badge-move';   dest = `→ ${d.dest_label}`; }
+    if (d.action === 'delete') { deletes++; badge = 'badge-delete'; dest = '—'; }
+    if (d.action === 'skip')   { skips++;   badge = 'badge-skip';   dest = '—'; }
+    tbody.innerHTML += `<tr>
+      <td>${file}</td>
+      <td><span class="badge ${badge}">${d.action}</span></td>
+      <td style="color:var(--muted)">${dest}</td>
+    </tr>`;
+  });
+
+  document.getElementById('review-stats').innerHTML = `
+    <div class="stat-card moves"><div class="num">${moves}</div><div class="lbl">Move</div></div>
+    <div class="stat-card deletes"><div class="num">${deletes}</div><div class="lbl">Delete</div></div>
+    <div class="stat-card skips"><div class="num">${skips}</div><div class="lbl">Skip</div></div>
+    <div class="stat-card undecided"><div class="num">${undecided.length}</div><div class="lbl">Undecided</div></div>
+  `;
+
+  const ub = document.getElementById('undecided-block');
+  if (undecided.length > 0) {
+    ub.style.display = 'block';
+    document.getElementById('undecided-list').textContent = undecided.join('  ·  ');
+  } else {
+    ub.style.display = 'none';
+  }
+
+  showScreen('review');
+}
+
+function goSort() { showScreen('sort'); }
+
+// ── Run ───────────────────────────────────────────────────────────────────────
+// POST /api/run — the server applies all pending moves/deletes and returns
+// a results summary.  This is the only operation that mutates the filesystem.
+async function runChanges() {
+  try {
+    const res = await fetch('/api/run', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || `Run failed (${res.status})`);
+    }
+
+    const detail = document.getElementById('result-detail');
+    detail.innerHTML =
+      `<span style="color:var(--accent)">✔ Moved</span>: ${data.moved.length} files<br>` +
+      `<span style="color:var(--danger)">✖ Deleted</span>: ${data.deleted.length} files<br>` +
+      `<span style="color:var(--muted)">⊘ Skipped</span>: ${data.skipped.length} files<br>` +
+      (data.errors.length ? `<span style="color:var(--accent2)">⚠ Errors</span>: ${data.errors.length}<br>` : '') +
+      (data.errors.map(e => `&nbsp;&nbsp;${e.file}: ${e.reason}`).join('<br>'));
+
+    showScreen('results');
+  } catch(e) {
+    showToast(e.message || 'Run failed');
+  }
+}
+
+// ── Reset ─────────────────────────────────────────────────────────────────────
+// Clear all local state and return to the setup screen for a fresh scan.
+function reset() {
+  images = []; currentIndex = 0; totalImages = 0; decidedCount = 0;
+  document.getElementById('dir-input').value = '';
+  document.getElementById('header-progress').style.display = 'none';
+  document.getElementById('progress-bar').style.width = '0%';
+  recomputeFoldersFromTemplates();
+  renderFoldersGrid();
+  renderFolderButtons();
+  showScreen('setup');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function updateSortProgress() {
+  document.getElementById('sort-progress').innerHTML =
+    `Image <span>${currentIndex+1}</span> of <span>${totalImages}</span>`;
+  document.getElementById('sort-decided').innerHTML =
+    `<span>${decidedCount}</span> decided`;
+}
+
+function updateHeaderProgress() {
+  document.getElementById('hp-current').textContent = currentIndex + 1;
+  document.getElementById('hp-total').textContent = totalImages;
+}
+
+function updateProgressBar() {
+  const pct = totalImages > 0 ? Math.round((currentIndex / totalImages) * 100) : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+  updateHeaderProgress();
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+// Global keydown handler.  Only active on the sort screen; text inputs are
+// explicitly excluded so the user can type directory paths without triggering actions.
+function handleKey(e) {
+  const screen = document.querySelector('.screen.active').id;
+  if (screen !== 'screen-sort') return;
+  const tag = e.target.tagName;
+  if (tag === 'INPUT') return;
+
+  const key = e.key.toLowerCase();
+  const numFolder = folders.find(f => f.key === e.key);
+  if (numFolder) { decide('move', numFolder.key); return; }
+  if (key === 'd') { decide('delete'); return; }
+  if (key === 's') { decide('skip'); return; }
+  if (key === 'z') { undo(); return; }
+}
+
+init();
+</script>
+</body>
+</html>
